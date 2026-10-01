@@ -1,0 +1,65 @@
+MODE = os.getenv("DELTA_MODE", "DEMO") # DEMO or REAL
+
+# === STEP 2: SITE SELECTOR - Automatic ===
+if MODE == "REAL":
+    BASE_URL = "https://api.india.delta.exchange"
+    print("🔴 REAL MONEY MODE ACTIVE")
+else:
+    BASE_URL = "https://cdn-ind.testnet.deltaex.org"
+    print("🟢 DEMO MODE ACTIVE - Safe hai")
+
+API_KEY = os.getenv("DELTA_API_KEY")
+API_SECRET = os.getenv("DELTA_API_SECRET")
+
+# === STEP 3: TREND LOGIC - Aapka Wahi VWMA20 + EMA200 ===
+def get_trend():
+    url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=250"
+    data = requests.get(url).json()
+    df = pd.DataFrame(data, columns=['t','o','h','l','c','v','a','b','c','d','e','f'])
+    df['close'] = df['c'].astype(float)
+    df['volume'] = df['v'].astype(float)
+    df['vwma20'] = (df['close']*df['volume']).rolling(20).sum() / df['volume'].rolling(20).sum()
+    df['ema200'] = df['close'].ewm(span=200).mean()
+    last = df.iloc[-2] # Kal ka band candle
+    trend = "UP" if last['close'] > last['vwma20'] and last['close'] > last['ema200'] else "DOWN"
+    return trend, last['close']
+
+# === STEP 4: DELTA PE ORDER LAGANE KA FUNCTION ===
+def place_delta_order(side, size=1):
+    # side = "buy" or "sell", size = kitne contracts
+    # Agar key nahi hai to sirf print karega (paper trade)
+    if not API_KEY:
+        print(f"[PAPER] {side.upper()} order {size} contract - Key nahi lagi")
+        return
+
+    # Delta ka signature banana padta hai
+    path = "/v2/orders"
+    payload = json.dumps({"product_symbol": "BTCUSD", "size": size, "side": side, "order_type": "market_order"})
+    timestamp = str(int(time.time()))
+    signature_data = "POST" + timestamp + path + "" + payload
+    signature = hmac.new(API_SECRET.encode(), signature_data.encode(), hashlib.sha256).hexdigest()
+
+    headers = {'api-key': API_KEY, 'timestamp': timestamp, 'signature': signature, 'Content-Type': 'application/json'}
+    r = requests.post(BASE_URL + path, data=payload, headers=headers)
+    print(f"Delta Response [{MODE}]: {r.json()}")
+
+# === STEP 5: MAIN LOOP ===
+capital = 10000
+position = None
+print(f"Bot chal raha hai {BASE_URL} pe")
+
+while True:
+    trend, price = get_trend()
+    print(f"{datetime.now()} | Trend: {trend} | Price: {price}")
+
+    if trend == "UP" and position!= "LONG":
+        place_delta_order("buy", size=1) # Demo pe 1 contract = safe
+        position = "LONG"
+        print(f">>> BUY kiya @ {price}")
+
+    elif trend == "DOWN" and position == "LONG":
+        place_delta_order("sell", size=1)
+        position = None
+        print(f">>> SELL kiya @ {price}")
+
+    time.sleep(300) # 5 min wait
